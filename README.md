@@ -66,10 +66,22 @@ Run the sync script:
 python sync_queries_to_mongo.py
 ```
 
-## Syncing Splunk Indexes and Devices
-To sync mapping data between Splunk, MySQL, and MongoDB, configure the required DB parameters in your `.env` and run:
+## Syncing Splunk Indexes and Customer Data
+To sync mapping data between Splunk and MongoDB, ensure `customer_mapping.json` is updated with your customer details and run:
 ```bash
 python sync_splunk_to_mongodb.py
+```
+
+### Customer Mapping (`customer_mapping.json`)
+This file defines the relationship between Splunk index identifiers and customer metadata.
+```json
+[
+    {
+        "splunk_name": "customer_id",
+        "reciever_id": "metadata_id",
+        "elk_name": "related_name"
+    }
+]
 ```
 
 ## Using this as a Module

@@ -1,5 +1,3 @@
-from sshtunnel import SSHTunnelForwarder
-import mysql.connector
 from pymongo import MongoClient
 import splunklib.client as client
 import splunklib.results as results
@@ -11,61 +9,28 @@ from dotenv import load_dotenv
 # Disable SSL Warnings for Splunk
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+MAPPING_FILE = "customer_mapping.json"
 
-def sync_mysql_to_mongodb():
+def load_customer_mapping():
     """
-    Fetch mapping data from MySQL 'reciever' table via SSH Tunnel.
+    Load mapping data from a local JSON file.
+    Expected format: List of objects with splunk_name, reciever_id, and elk_name.
     """
-    SSH_HOST = os.getenv("SSH_HOST")
-    SSH_PORT = int(os.getenv("SSH_PORT", 22))
-    SSH_USER = os.getenv("SSH_USER")
-    SSH_PASSWORD = os.getenv("SSH_PASSWORD")
-
-    MYSQL_HOST = os.getenv("MYSQL_HOST")
-    MYSQL_PORT = int(os.getenv("MYSQL_PORT", 3306))
-    MYSQL_USER = os.getenv("MYSQL_USER")
-    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
-    MYSQL_DB = os.getenv("MYSQL_DB", "monitor")
-
+    if not os.path.exists(MAPPING_FILE):
+        print(f"[!] Mapping file {MAPPING_FILE} not found.")
+        return []
+    
     try:
-        with SSHTunnelForwarder(
-            (SSH_HOST, SSH_PORT),
-            ssh_username=SSH_USER,
-            ssh_password=SSH_PASSWORD,
-            remote_bind_address=(MYSQL_HOST, MYSQL_PORT),
-        ) as tunnel:
-            print(f"[*] SSH Tunnel established on local port: {tunnel.local_bind_port}")
-
-            conn = mysql.connector.connect(
-                host="127.0.0.1",
-                port=tunnel.local_bind_port,
-                user=MYSQL_USER,
-                password=MYSQL_PASSWORD,
-                database=MYSQL_DB,
-                charset="utf8mb4",
-            )
-
-            cursor = conn.cursor(dictionary=True)
-            sql_query = "SELECT _id, splunk_name, splunk_url, elk_name FROM reciever WHERE splunk_name IS NOT NULL AND splunk_name != ''"
-            cursor.execute(sql_query)
-            rows = cursor.fetchall()
-
-            cursor.close()
-            conn.close()
-
-            if rows:
-                print(f"[+] Found {len(rows)} records from MySQL.")
-                return rows
-            else:
-                print("[-] No data found in MySQL table matching the criteria.")
-                return []
-
+        with open(MAPPING_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception as e:
-        print(f"[!] MySQL Error: {e}")
-        return None
-
+        print(f"[!] Error loading mapping file: {e}")
+        return []
 
 def run_sync():
+    # Load environment variables
+    load_dotenv()
+
     # MongoDB Configuration
     MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017/")
     mongo_client = MongoClient(MONGO_URL)
@@ -88,19 +53,20 @@ def run_sync():
             "password": password,
         })
 
-    # 1. Fetch mapping data from MySQL
-    mysql_data = sync_mysql_to_mongodb()
-    if not mysql_data:
-        print("[!] Stopping: Could not fetch mapping data.")
+    # 1. Fetch mapping data from JSON file
+    mapping_data = load_customer_mapping()
+    if not mapping_data:
+        print("[!] Stopping: No mapping data available.")
         return
 
     # Create Normalized Mapping
+    # Format: { splunk_name_lowercase: { reciever_id, elk_name } }
     splunk_name_to_info = {
         str(row["splunk_name"]).strip().lower(): {
-            "reciever_id": row["_id"],
+            "reciever_id": row.get("reciever_id"),
             "elk_name": row.get("elk_name"),
         }
-        for row in mysql_data
+        for row in mapping_data
         if row.get("splunk_name")
     }
 

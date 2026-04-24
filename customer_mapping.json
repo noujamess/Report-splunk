@@ -1,0 +1,17 @@
+[
+    {
+        "splunk_name": "x1",
+        "reciever_id": "x2",
+        "elk_name": "x3"
+    },
+    {
+        "splunk_name": "x4",
+        "reciever_id": "x5",
+        "elk_name": "x6"
+    },
+    {
+        "splunk_name": "x7",
+        "reciever_id": "x8",
+        "elk_name": "x9"
+    }
+]
