@@ -1,0 +1,25 @@
+{
+    "all_run": {
+        "all": {
+            "Example_Global_Query": "search index=alerts title=\"*{site_names} - *\" | stats count by title",
+            "Another_Global_Query": "search index=alerts | stats count by src, dhost"
+        },
+        "example_site_id": {
+            "Site_Specific_Global_Query": "search index=alerts title=\"EXAMPLE - *\" | stats count"
+        }
+    },
+    "fortigate": {
+        "all": {
+            "Fortigate_Auth_Success": "search index={index} \"logged in successfully\" | stats count by src duser host msg | table src duser host msg count",
+            "Fortigate_Auth_Fail": "search index={index} \"login failed\" | stats count by src duser host msg"
+        },
+        "example_site_id": {
+            "Fortigate_Site_Specific": "search index={index} \"tunnel-up\" | stats count by src dst"
+        }
+    },
+    "windows": {
+        "all": {
+            "Windows_Login_Success": "search index={index} EventCode=4624 | stats count by user src_ip"
+        }
+    }
+}

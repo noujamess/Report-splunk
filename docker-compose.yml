@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  api:
+    restart: unless-stopped
+    build: .
+    image: api-report
+    ports:
+      - "33322:5000"
+    # volumes:
+    #   - .:/app
+    env_file:
+      - .env
