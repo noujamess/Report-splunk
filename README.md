@@ -34,29 +34,46 @@ This microservice provides an automated reporting API and a real-time WebSocket 
 - `PORT`: Internal port the FastAPI app listens on (default: 5000).
 - `ALLOWED_ORIGINS`: Comma-separated list of origins allowed to access the API (e.g., `http://example.com,http://localhost:3000`). Use `*` to allow all.
 - `MONGO_URL`: Full MongoDB connection string (e.g., `mongodb://localhost:27017/`).
-- `MONGO_DB_NAME` / `MONGO_COLLECTION_NAME`: Target database and collection names.
+- `MONGO_DB_NAME` / `MONGO_COLLECTION_NAME` / `MONGO_QUERY_COLLECTION_NAME`: Target database and collection names.
 - `SPLUNK_USER` / `SPLUNK_PASS`: Service account credentials for querying Splunk.
 - `SPLUNK_HOSTS`: Comma-separated list of Splunk Server IPs for data syncing (e.g., `192.168.4.101,192.168.4.102`).
+- `ELK_SERVER_HOST`: Elasticsearch/ELK connection URL (e.g., `https://localhost:9200`).
+- `ELK_USER` / `ELK_PASS`: Credentials for querying Elasticsearch/ELK.
 
 ## Managing Queries (`query.json`)
-The `query.json` file serves as a template or configuration mapping for your Splunk queries. It follows a 3-level nested structure:
-`"Device Type" -> "Site ID" -> "Query Name" : "Splunk Query"`
+The `query.json` file serves as a template or configuration mapping for your Splunk/Elasticsearch queries. It follows a flat list structure:
 
 **Example Structure:**
 ```json
 {
-    "fortigate": {
-        "all": {
-            "Fortigate_Auth_Success": "search index={index} \"logged in successfully\" | stats count"
-        },
-        "specific_site": {
-            "Custom_Query": "search index={index} | head 10"
-        }
+  "version": 1,
+  "description": "Unified query schema",
+  "queries": [
+    {
+      "source": "splunk",
+      "query_type": "splunk_search",
+      "device": "fortigate",
+      "site": "all",
+      "query_name": "Fortigate_Authentication_Success",
+      "query_template": "search index={index} \"logged in successfully\" | stats count",
+      "index_pattern": null,
+      "enabled": true
+    },
+    {
+      "source": "elasticsearch",
+      "query_type": "es_search",
+      "device": "fortigate",
+      "site": "all",
+      "query_name": "Fortigate_Authentication_Fail",
+      "query_template": "{\"query\": {\"match\": {\"message\": \"login failed\"}}}",
+      "index_pattern": "{index}",
+      "enabled": true
     }
+  ]
 }
 ```
 **Placeholders:**
-- `{index}`: Will be dynamically replaced by the target Splunk index.
+- `{index}`: Will be dynamically replaced by the target Splunk/ELK index.
 - `{site_names}` or `{id}`: Will be dynamically replaced by the Site ID.
 
 ### Syncing Queries to MongoDB

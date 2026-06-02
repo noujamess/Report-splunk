@@ -1,75 +1,97 @@
-import json
-import pymongo
 import os
+import json
+from pathlib import Path
+from dotenv import load_dotenv
+from pymongo import MongoClient, UpdateOne
 
-# Configuration
+# Load environment variables
+load_dotenv()
+
+# Configuration from environment variables
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017/")
 DB_NAME = os.getenv("MONGO_DB_NAME", "report")
-COLLECTION_NAME = os.getenv("MONGO_QUERY_COLLECTION_NAME", "queries")
-JSON_FILE_PATH = "query.json"
+QUERY_COLLECTION_NAME = os.getenv("MONGO_QUERY_COLLECTION_NAME", "queries")
+DEFAULT_QUERY_FILE = Path(__file__).resolve().parent / "query.json"
 
 
-def sync_query_to_mongo():
+def load_query_documents(query_file):
+    if not os.path.exists(query_file):
+        raise FileNotFoundError(f"Error: Query file '{query_file}' not found.")
+
+    with open(query_file, "r", encoding="utf-8") as file:
+        try:
+            payload = json.load(file)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Error parsing JSON file: {e}")
+
+    queries = payload.get("queries", [])
+    if not isinstance(queries, list):
+        raise ValueError("Expected 'queries' to be a list in query file.")
+    return queries
+
+
+def build_upsert_operations(queries):
+    operations = []
+    for query in queries:
+        source = query.get("source")
+        device = query.get("device")
+        site = query.get("site")
+        query_name = query.get("query_name")
+
+        if not source or not device or not site or not query_name:
+            continue
+
+        filter_doc = {
+            "source": source,
+            "device": device,
+            "site": site,
+            "query_name": query_name,
+        }
+        operations.append(UpdateOne(filter_doc, {"$set": query}, upsert=True))
+    return operations
+
+
+def sync_queries_to_mongodb(query_file, mongo_url, db_name, collection_name):
     try:
-        # Connect to MongoDB
-        client = pymongo.MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
-        db = client[DB_NAME]
-        collection = db[COLLECTION_NAME]
+        queries = load_query_documents(query_file)
+    except Exception as e:
+        print(f"[!] {e}")
+        return
+
+    operations = build_upsert_operations(queries)
+
+    if not operations:
+        print("[!] No valid query documents found to import.")
+        return
+
+    try:
+        mongo_client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
+        db = mongo_client[db_name]
+        collection = db[collection_name]
 
         # Test connection
-        client.server_info()
-        print("Connected to MongoDB successfully.")
-
+        mongo_client.server_info()
+        print("[*] Connected to MongoDB successfully.")
     except Exception as e:
-        print(f"Failed to connect to MongoDB: {e}")
+        print(f"[!] Failed to connect to MongoDB: {e}")
         return
 
-    # Load JSON file
-    if not os.path.exists(JSON_FILE_PATH):
-        print(f"Error: File '{JSON_FILE_PATH}' not found in the current directory.")
-        return
-
-    with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
-        try:
-            query_data = json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON file: {e}")
-            return
-
-    inserted_count = 0
-    updated_count = 0
-
-    # Parse nested JSON: device -> site -> query_name -> query_template
-    for device, sites in query_data.items():
-        for site, queries in sites.items():
-            for query_name, query_template in queries.items():
-                # Setup filter for checking existing query
-                filter_doc = {"device": device, "site": site, "query_name": query_name}
-
-                # Document to update or insert
-                update_doc = {
-                    "$set": {
-                        "device": device,
-                        "site": site,
-                        "query_name": query_name,
-                        "query_template": query_template,
-                    }
-                }
-
-                # Update if exists, insert if not (Upsert)
-                result = collection.update_one(filter_doc, update_doc, upsert=True)
-
-                if result.upserted_id:
-                    inserted_count += 1
-                elif result.modified_count > 0:
-                    updated_count += 1
-
-    print("-" * 30)
+    result = collection.bulk_write(operations, ordered=False)
+    print("-" * 40)
     print("Sync Summary:")
-    print(f"Added new queries: {inserted_count}")
-    print(f"Updated existing queries: {updated_count}")
-    print("-" * 30)
+    print(f"Source file: {query_file}")
+    print(f"Target collection: {db_name}.{collection_name}")
+    print(f"Processed queries: {len(operations)}")
+    print(f"Inserted: {result.upserted_count}")
+    print(f"Modified: {result.modified_count}")
+    print(f"Matched: {result.matched_count}")
+    print("-" * 40)
 
 
 if __name__ == "__main__":
-    sync_query_to_mongo()
+    sync_queries_to_mongodb(
+        query_file=str(DEFAULT_QUERY_FILE),
+        mongo_url=MONGO_URL,
+        db_name=DB_NAME,
+        collection_name=QUERY_COLLECTION_NAME,
+    )
