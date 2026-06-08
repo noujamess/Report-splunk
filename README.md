@@ -135,10 +135,10 @@ Supported examples are included in `query.json`.
 {
   "source": "splunk",
   "query_type": "splunk_search",
-  "device": "fortigate",
+  "device": "xxx",
   "site": "all",
-  "query_name": "Fortigate_Login_Failed",
-  "query_template": "search index={index} \"login failed\" | stats count by src duser host reason",
+  "query_name": "xxx",
+  "query_template": "search index={index}",
   "enabled": true
 }
 ```
@@ -151,13 +151,13 @@ Supported examples are included in `query.json`.
   "query_type": "elk_search",
   "device": "all",
   "site": "all",
-  "query_name": "Receiver_Usecase_Summary",
-  "query_template": "revid:{receiver_id}",
-  "index_pattern": "casecbt-v01",
-  "time_field": "created",
-  "group_by_field": "usecase.keyword",
-  "result_fields": ["usecase", "count"],
-  "elk_server": "primary",
+  "query_name": "",
+  "query_template": "",
+  "index_pattern": "",
+  "time_field": "",
+  "group_by_field": "",
+  "result_fields": ["", ""],
+  "elk_server": "",
   "enabled": true
 }
 ```
@@ -168,14 +168,14 @@ Supported examples are included in `query.json`.
 {
   "source": "elk",
   "query_type": "elk_search",
-  "device": "wineventlog",
+  "device": "",
   "site": "all",
-  "query_name": "Windows_4624_Summary",
-  "query_template": "externalId:4624 AND NOT duser:*$",
-  "index_pattern": "{elk_name}-win*",
+  "query_name": "",
+  "query_template": "",
+  "index_pattern": "{elk_name}",
   "time_field": "@timestamp",
-  "group_by_field": "usecase.keyword",
-  "result_fields": ["duser", "src", "outcome", "logintype", "count"],
+  "group_by_field": "",
+  "result_fields": ["", "", "", "", ""],
   "elk_server": "secondary",
   "enabled": true
 }
@@ -189,9 +189,7 @@ The backend can replace these placeholders at runtime:
 - `{id}`
 - `{id_upper}`
 - `{site_names}`
-- `{elk_name}`
-- `{receiver_id}`
-- `{reciever_id}`
+- `{elk_name}
 
 ## Import example queries into MongoDB
 
