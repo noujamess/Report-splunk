@@ -575,7 +575,7 @@ async def ws_generate_report(websocket: WebSocket):
                             continue
 
                         final_query_string = replace_placeholders(query.get("query_template", ""), site_id, site_context_record)
-                        index_pattern = replace_placeholders(query.get("index_pattern", "casecbt-v01"), site_id, site_context_record)
+                        index_pattern = replace_placeholders(query.get("index_pattern", ""), site_id, site_context_record)
                         es_client = await get_elk_client(query)
                         elk_job_tasks.append(
                             run_elk_job(
@@ -599,7 +599,7 @@ async def ws_generate_report(websocket: WebSocket):
                         for query in get_site_queries(elk_device.get(device, {}), site_id):
                             query_name = query.get("query_name")
                             final_query_string = replace_placeholders(query.get("query_template", ""), site_id, record)
-                            index_pattern = replace_placeholders(query.get("index_pattern", "casecbt-v01"), site_id, record)
+                            index_pattern = replace_placeholders(query.get("index_pattern", ""), site_id, record)
                             es_client = await get_elk_client(query)
                             elk_job_tasks.append(
                                 run_elk_job(
