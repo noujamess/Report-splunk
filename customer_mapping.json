@@ -1,17 +1,12 @@
 [
-    {
-        "splunk_name": "x1",
-        "reciever_id": "x2",
-        "elk_name": "x3"
-    },
-    {
-        "splunk_name": "x4",
-        "reciever_id": "x5",
-        "elk_name": "x6"
-    },
-    {
-        "splunk_name": "x7",
-        "reciever_id": "x8",
-        "elk_name": "x9"
-    }
+  {
+    "splunk_name": "customer_a",
+    "reciever_id": "1001",
+    "elk_name": "customer-a"
+  },
+  {
+    "splunk_name": "customer_b",
+    "reciever_id": "1002",
+    "elk_name": "customer-b"
+  }
 ]

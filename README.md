@@ -1,111 +1,235 @@
-# Splunk Auto Report Microservice
+# Project Report Deploy
 
-This microservice provides an automated reporting API and a real-time WebSocket connection to generate reports from Splunk and save/retrieve configurations from MongoDB.
+Deployable version of the Project Report backend for teams who want to run the reporting API in their own environment.
 
-## Features
-- **FastAPI** backend for high performance and async capabilities.
-- **WebSocket** support for real-time log streaming and report generation status.
-- Configurable **CORS** and dynamic database connections.
-- Ready to deploy as a standalone Docker container.
+This folder is designed to be:
 
-## Pre-requisites
-- Docker and Docker Compose
-- Or Python 3.9+ for local development
+- production-like in behavior
+- free of real credentials
+- configurable through `.env`
+- ready for Splunk, MongoDB, and single or multi-ELK deployments
 
-## Setup and Deployment (Docker)
+## Included capabilities
 
-1. **Configure Environment Variables**
-   Rename `.env.example` to `.env` and fill in your actual credentials and connection URLs.
-   ```bash
-   cp .env.example .env
-   ```
+- WebSocket API for real-time report execution logs
+- Query management API backed by MongoDB
+- Customer/site/device lookup APIs
+- Customer sync script for MongoDB population
+- Query sync script for importing `query.json` into MongoDB
+- Support for ELK `primary` and `secondary` routing
 
-2. **Run the Service**
-   Use Docker Compose to build and start the service in detached mode:
-   ```bash
-   docker-compose up -d --build
-   ```
+## Folder highlights
 
-3. **Check the Status**
-   The API will be available at `http://<your-server-ip>:33322` by default.
-   You can verify it's running by accessing `http://<your-server-ip>:33322/`
+- `main.py`
+  Starts the FastAPI application and exposes all routers.
+- `routes/report_auto/autoreport_websocket.py`
+  Main WebSocket and helper APIs such as `/sites`, `/devices`, `/customers`.
+- `routes/report_auto/api_manage_queries.py`
+  CRUD API for MongoDB query definitions.
+- `query.json`
+  Example query definitions for Splunk and ELK.
+- `sync_queries_to_mongo.py`
+  Imports example queries into MongoDB.
+- `sync_splunk_to_mongodb.py`
+  Populates customer mapping/index data into MongoDB.
+- `customer_mapping.json`
+  Example mapping file for customer metadata used by the sync script.
 
-## Configuration Options (`.env`)
-- `PORT`: Internal port the FastAPI app listens on (default: 5000).
-- `ALLOWED_ORIGINS`: Comma-separated list of origins allowed to access the API (e.g., `http://example.com,http://localhost:3000`). Use `*` to allow all.
-- `MONGO_URL`: Full MongoDB connection string (e.g., `mongodb://localhost:27017/`).
-- `MONGO_DB_NAME` / `MONGO_COLLECTION_NAME` / `MONGO_QUERY_COLLECTION_NAME`: Target database and collection names.
-- `SPLUNK_USER` / `SPLUNK_PASS`: Service account credentials for querying Splunk.
-- `SPLUNK_HOSTS`: Comma-separated list of Splunk Server IPs for data syncing (e.g., `192.168.4.101,192.168.4.102`).
-- `ELK_SERVER_HOST`: Elasticsearch/ELK connection URL (e.g., `https://localhost:9200`).
-- `ELK_USER` / `ELK_PASS`: Credentials for querying Elasticsearch/ELK.
+## Quick start
 
-## Managing Queries (`query.json`)
-The `query.json` file serves as a template or configuration mapping for your Splunk/Elasticsearch queries. It follows a flat list structure:
+### 1. Create your environment file
 
-**Example Structure:**
+Copy `.env.example` to `.env` and fill in your own values.
+
+```bash
+cp .env.example .env
+```
+
+Required areas to review:
+
+- MongoDB connection
+- Splunk credentials
+- Splunk hosts
+- Primary ELK connection
+- Secondary ELK connection if used
+- Allowed CORS origins
+
+### 2. Install locally
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Run the API
+
+```bash
+python main.py
+```
+
+By default the service listens on:
+
+- `http://0.0.0.0:5000`
+
+### 4. Run with Docker
+
+```bash
+docker-compose up -d --build
+```
+
+Default published port in `docker-compose.yml`:
+
+- `33322`
+
+Health check:
+
+- `GET http://<host>:33322/`
+
+## Main API endpoints
+
+### Health
+
+- `GET /`
+
+### Real-time WebSocket report generation
+
+- `WS /api/report_ws/generate`
+
+Send JSON:
+
 ```json
 {
-  "version": 1,
-  "description": "Unified query schema",
-  "queries": [
-    {
-      "source": "splunk",
-      "query_type": "splunk_search",
-      "device": "fortigate",
-      "site": "all",
-      "query_name": "Fortigate_Authentication_Success",
-      "query_template": "search index={index} \"logged in successfully\" | stats count",
-      "index_pattern": null,
-      "enabled": true
-    },
-    {
-      "source": "elasticsearch",
-      "query_type": "es_search",
-      "device": "fortigate",
-      "site": "all",
-      "query_name": "Fortigate_Authentication_Fail",
-      "query_template": "{\"query\": {\"match\": {\"message\": \"login failed\"}}}",
-      "index_pattern": "{index}",
-      "enabled": true
-    }
-  ]
+  "site_names": "customer_a,customer_b",
+  "start_date": "01/06/2026",
+  "end_date": "30/06/2026"
 }
 ```
-**Placeholders:**
-- `{index}`: Will be dynamically replaced by the target Splunk/ELK index.
-- `{site_names}` or `{id}`: Will be dynamically replaced by the Site ID.
 
-### Syncing Queries to MongoDB
-Once you have defined your templates in `query.json`, you must sync them to MongoDB so the WebSocket can read them dynamically.
-Run the sync script:
+### Query management
+
+- `GET /api/manage/queries`
+- `POST /api/manage/queries`
+- `PUT /api/manage/queries/{query_id}`
+- `DELETE /api/manage/queries/{query_id}`
+
+### Lookup APIs
+
+- `GET /api/report_ws/sites`
+- `GET /api/report_ws/devices`
+- `GET /api/report_ws/customers`
+- `GET /api/report_ws/customers?site=customer_a`
+
+### Customer sync API
+
+- `POST /api/report_ws/customers/sync`
+- `GET /api/report_ws/customers/sync`
+
+## Query definition format
+
+Queries are stored in MongoDB collection defined by `MONGO_QUERY_COLLECTION_NAME`.
+
+Supported examples are included in `query.json`.
+
+### Splunk example
+
+```json
+{
+  "source": "splunk",
+  "query_type": "splunk_search",
+  "device": "fortigate",
+  "site": "all",
+  "query_name": "Fortigate_Login_Failed",
+  "query_template": "search index={index} \"login failed\" | stats count by src duser host reason",
+  "enabled": true
+}
+```
+
+### ELK example on primary
+
+```json
+{
+  "source": "elk",
+  "query_type": "elk_search",
+  "device": "all",
+  "site": "all",
+  "query_name": "Receiver_Usecase_Summary",
+  "query_template": "revid:{receiver_id}",
+  "index_pattern": "casecbt-v01",
+  "time_field": "created",
+  "group_by_field": "usecase.keyword",
+  "result_fields": ["usecase", "count"],
+  "elk_server": "primary",
+  "enabled": true
+}
+```
+
+### ELK example on secondary
+
+```json
+{
+  "source": "elk",
+  "query_type": "elk_search",
+  "device": "wineventlog",
+  "site": "all",
+  "query_name": "Windows_4624_Summary",
+  "query_template": "externalId:4624 AND NOT duser:*$",
+  "index_pattern": "{elk_name}-win*",
+  "time_field": "@timestamp",
+  "group_by_field": "usecase.keyword",
+  "result_fields": ["duser", "src", "outcome", "logintype", "count"],
+  "elk_server": "secondary",
+  "enabled": true
+}
+```
+
+## Supported placeholders
+
+The backend can replace these placeholders at runtime:
+
+- `{index}`
+- `{id}`
+- `{id_upper}`
+- `{site_names}`
+- `{elk_name}`
+- `{receiver_id}`
+- `{reciever_id}`
+
+## Import example queries into MongoDB
+
 ```bash
 python sync_queries_to_mongo.py
 ```
 
-## Syncing Splunk Indexes and Customer Data
-To sync mapping data between Splunk and MongoDB, ensure `customer_mapping.json` is updated with your customer details and run:
+This reads `query.json` and upserts records into MongoDB.
+
+## Sync customer data into MongoDB
+
 ```bash
 python sync_splunk_to_mongodb.py
 ```
 
-### Customer Mapping (`customer_mapping.json`)
-This file defines the relationship between Splunk index identifiers and customer metadata.
-```json
-[
-    {
-        "splunk_name": "customer_id",
-        "reciever_id": "metadata_id",
-        "elk_name": "related_name"
-    }
-]
-```
+What it does:
 
-## Using this as a Module
-If you have another backend service, you can connect to this microservice via HTTP requests or standard WebSockets.
+- reads `customer_mapping.json`
+- connects to each Splunk host in `SPLUNK_HOSTS`
+- discovers indexes and device/site mappings
+- enriches data with `reciever_id` and `elk_name`
+- stores records in the MongoDB customer collection
 
-**WebSocket Endpoint:** 
-`ws://<ip>:33322/api/report_ws/generate`
+## Notes for future deployers
 
-**REST API Examples:**
-`GET http://<ip>:33322/api/report_ws/sites` - Fetches unique site IDs from MongoDB.
+- No real credentials are stored in this folder
+- Existing ELK queries without `elk_server` default to `primary`
+- You can remove the secondary ELK env values if your deployment uses only one ELK cluster
+- `customer_mapping.json` is only an example and should be replaced with your own mapping
+
+## Recommended deployment flow
+
+1. Configure `.env`
+2. Replace `customer_mapping.json` with your real mapping
+3. Start MongoDB
+4. Start this API
+5. Run `python sync_splunk_to_mongodb.py`
+6. Review customer data via `/api/report_ws/customers`
+7. Edit `query.json` with your own queries
+8. Run `python sync_queries_to_mongo.py`
+9. Test `WS /api/report_ws/generate`

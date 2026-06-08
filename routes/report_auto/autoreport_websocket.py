@@ -1,6 +1,10 @@
 import asyncio
+import contextlib
+import io
+import importlib.util
 import os
 import re
+from typing import Optional
 
 import splunklib.client as client
 import splunklib.results as results
@@ -17,7 +21,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 router = APIRouter(prefix="/api/report_ws")
 report_lock = asyncio.Lock()
 
-# Configuration from environment variables
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017/")
 DB_NAME = os.getenv("MONGO_DB_NAME", "report")
 COLLECTION_NAME = os.getenv("MONGO_COLLECTION_NAME", "customer")
@@ -33,15 +36,18 @@ except Exception as exc:
     coll = None
 
 SPLUNK_PORT = int(os.getenv("SPLUNK_PORT", 8089))
-SPLUNK_USER = os.getenv("SPLUNK_USER", "admin")
-SPLUNK_PASS = os.getenv("SPLUNK_PASS", "changeme")
+SPLUNK_USER = os.getenv("SPLUNK_USER", "")
+SPLUNK_PASS = os.getenv("SPLUNK_PASS", "")
 
-ELK_SERVER_HOST = os.getenv("ELK_SERVER_HOST", "https://localhost:9200")
-ELK_USER = os.getenv("ELK_USER", "admin")
-ELK_PASS = os.getenv("ELK_PASS", "changeme")
+ELK_SERVER_HOST = os.getenv("ELK_SERVER_HOST", "")
+ELK_USER = os.getenv("ELK_USER", "")
+ELK_PASS = os.getenv("ELK_PASS", "")
+ELK_SERVER_2_HOST = os.getenv("ELK_SERVER_2_HOST", "")
+ELK_SERVER_2_USER = os.getenv("ELK_SERVER_2_USER", "")
+ELK_SERVER_2_PASS = os.getenv("ELK_SERVER_2_PASS", "")
 
-MAX_CONCURRENT_SPLUNK_JOBS = 5
-MAX_CONCURRENT_ELK_JOBS = 5
+MAX_CONCURRENT_SPLUNK_JOBS = int(os.getenv("MAX_CONCURRENT_SPLUNK_JOBS", 5))
+MAX_CONCURRENT_ELK_JOBS = int(os.getenv("MAX_CONCURRENT_ELK_JOBS", 5))
 
 splunk_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SPLUNK_JOBS)
 elk_semaphore = asyncio.Semaphore(MAX_CONCURRENT_ELK_JOBS)
@@ -102,6 +108,7 @@ def replace_placeholders(template, site_id, record):
     replacements = {
         "{index}": str(record.get("index", "")),
         "{id}": str(site_id),
+        "{id_upper}": str(site_id).upper(),
         "{site_names}": str(site_id),
         "{elk_name}": str(record.get("elk_name", "")),
         "{receiver_id}": str(receiver_id),
@@ -174,6 +181,20 @@ def get_site_queries(site_map, site_id):
     return site_map.get("all", [])
 
 
+def get_elk_connection_config(query_config):
+    elk_server = str(query_config.get("elk_server", "primary")).lower()
+    if elk_server == "secondary" and ELK_SERVER_2_HOST:
+        auth = None
+        if ELK_SERVER_2_USER and ELK_SERVER_2_PASS:
+            auth = (ELK_SERVER_2_USER, ELK_SERVER_2_PASS)
+        return {"name": "secondary", "host": ELK_SERVER_2_HOST, "auth": auth}
+
+    auth = None
+    if ELK_USER and ELK_PASS:
+        auth = (ELK_USER, ELK_PASS)
+    return {"name": "primary", "host": ELK_SERVER_HOST, "auth": auth}
+
+
 async def run_splunk_job(
     service,
     final_query,
@@ -204,13 +225,11 @@ async def run_splunk_job(
                     is_done = await asyncio.to_thread(job.is_done)
                     if is_done:
                         break
-
                     if waited >= max_wait:
                         msg = f"Timeout: Splunk job {query_name} took too long."
                         logs.append(msg)
                         await websocket.send_json({"type": "log", "message": msg})
                         return None
-
                     await asyncio.sleep(1)
                     waited += 1
 
@@ -244,7 +263,6 @@ async def run_splunk_job(
                         "data_count": len(data_rows),
                         "results": data_rows,
                     }
-
                     await websocket.send_json({"type": "log", "message": msg})
                     await websocket.send_json({"type": "data", "data": result_data})
                     return result_data
@@ -274,6 +292,7 @@ async def run_elk_job(
     site_id,
     device,
     query_name,
+    index_pattern,
     final_query_string,
     earliest,
     latest,
@@ -283,23 +302,14 @@ async def run_elk_job(
     async with elk_semaphore:
         try:
             group_by_field = query_config.get("group_by_field", "usecase.keyword")
-            index_pattern = query_config.get("index_pattern", "casecbt-v01")
             time_field = query_config.get("time_field", "@timestamp")
-
             request_body = {
                 "size": 0,
                 "query": {
                     "bool": {
                         "must": [
                             {"query_string": {"query": final_query_string}},
-                            {
-                                "range": {
-                                    time_field: {
-                                        "gte": earliest,
-                                        "lte": latest,
-                                    }
-                                }
-                            },
+                            {"range": {time_field: {"gte": earliest, "lte": latest}}},
                         ]
                     }
                 },
@@ -319,29 +329,21 @@ async def run_elk_job(
                 ignore_unavailable=True,
                 allow_no_indices=True,
             )
-
-            buckets = response.get("aggregations", {}).get("by_usecase", {}).get(
-                "buckets", []
-            )
+            buckets = response.get("aggregations", {}).get("by_usecase", {}).get("buckets", [])
             hits_total = response.get("hits", {}).get("total", {})
             if isinstance(hits_total, dict):
                 total_hits = hits_total.get("value", 0)
             else:
                 total_hits = hits_total or 0
 
-            data_rows = [
-                {
-                    "usecase": bucket.get("key", ""),
-                    "count": bucket.get("doc_count", 0),
-                }
-                for bucket in buckets
-            ]
+            data_rows = [{"usecase": bucket.get("key", ""), "count": bucket.get("doc_count", 0)} for bucket in buckets]
 
             if data_rows:
                 msg = f"Collected {len(data_rows)} rows for ELK query {query_name}."
                 logs.append(msg)
                 result_data = {
                     "source": "elk",
+                    "elk_server": query_config.get("elk_server", "primary"),
                     "site_id": site_id,
                     "device": device,
                     "query_name": query_name,
@@ -355,10 +357,7 @@ async def run_elk_job(
 
             msg = f"No results for ELK query {query_name}."
             if total_hits:
-                msg = (
-                    f"No aggregation rows for ELK query {query_name}, "
-                    f"but matched {total_hits} documents."
-                )
+                msg = f"No aggregation rows for ELK query {query_name}, but matched {total_hits} documents."
             logs.append(msg)
             await websocket.send_json({"type": "log", "message": msg})
             return None
@@ -377,20 +376,91 @@ async def get_sites():
     try:
         if coll is None:
             return {"status": "error", "message": "MongoDB connection not initialized"}
-
         unique_ids = await asyncio.to_thread(coll.distinct, "id")
-        if not unique_ids:
-            return {
-                "status": "success",
-                "sites": [],
-                "message": "No sites found in collection",
-            }
-
         unique_ids = sorted([str(uid) for uid in unique_ids if uid])
         return {"status": "success", "sites": unique_ids}
     except Exception as exc:
-        print(f"DEBUG: get_sites error: {exc}")
         raise HTTPException(status_code=500, detail=f"Database Error: {str(exc)}")
+
+
+@router.get("/devices")
+async def get_devices():
+    try:
+        if coll is None:
+            return {"status": "error", "message": "MongoDB connection not initialized"}
+        unique_devices = await asyncio.to_thread(coll.distinct, "device")
+        unique_devices = sorted([str(device) for device in unique_devices if device])
+        return {"status": "success", "devices": unique_devices}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Database Error: {str(exc)}")
+
+
+@router.get("/customers")
+async def get_customers(site: Optional[str] = None):
+    try:
+        if coll is None:
+            return {"status": "error", "message": "MongoDB connection not initialized"}
+        query = {}
+        if site and site != "all":
+            query["id"] = site
+        projection = {
+            "_id": 0,
+            "id": 1,
+            "device": 1,
+            "elk_name": 1,
+            "splunk_server_host": 1,
+            "index": 1,
+            "receiver_id": 1,
+            "reciever_id": 1,
+        }
+        customers = await asyncio.to_thread(
+            lambda: list(coll.find(query, projection).sort([("id", 1), ("device", 1)]))
+        )
+        data = []
+        for customer in customers:
+            data.append(
+                {
+                    "id": str(customer.get("id", "")),
+                    "device": str(customer.get("device", "")),
+                    "elk_name": str(customer.get("elk_name", "")),
+                    "splunk_server_host": str(customer.get("splunk_server_host", "")),
+                    "index": str(customer.get("index", "")),
+                    "receiver_id": customer.get("receiver_id") or customer.get("reciever_id") or "",
+                }
+            )
+        return {"status": "success", "data": data}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Database Error: {str(exc)}")
+
+
+@router.api_route("/customers/sync", methods=["GET", "POST"])
+async def sync_customers_to_mongodb():
+    try:
+        script_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "sync_splunk_to_mongodb.py")
+        )
+        if not os.path.exists(script_path):
+            raise HTTPException(status_code=404, detail=f"Sync script not found: {script_path}")
+
+        def run_sync_script():
+            output_buffer = io.StringIO()
+            spec = importlib.util.spec_from_file_location("sync_splunk_to_mongodb_runtime", script_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Unable to load sync script: {script_path}")
+            module = importlib.util.module_from_spec(spec)
+            with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(output_buffer):
+                spec.loader.exec_module(module)
+                if not hasattr(module, "run_sync"):
+                    raise RuntimeError("run_sync() not found in sync script.")
+                module.run_sync()
+            return output_buffer.getvalue().strip()
+
+        output = await asyncio.to_thread(run_sync_script)
+        return {"status": "success", "message": "Customer sync completed.", "output": output}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Sync Error: {str(exc)}")
 
 
 @router.websocket("/generate")
@@ -404,9 +474,7 @@ async def ws_generate_report(websocket: WebSocket):
         end_date_in = payload_data.get("end_date", "+0m")
 
         if not site_ids_input:
-            await websocket.send_json(
-                {"type": "error", "message": "Site ID is required."}
-            )
+            await websocket.send_json({"type": "error", "message": "Site ID is required."})
             await websocket.close()
             return
 
@@ -419,67 +487,45 @@ async def ws_generate_report(websocket: WebSocket):
 
             try:
                 unified_queries = await load_queries_from_mongodb()
-                (
-                    splunk_global,
-                    splunk_device,
-                    elk_global,
-                    elk_device,
-                ) = build_query_maps(unified_queries)
+                splunk_global, splunk_device, elk_global, elk_device = build_query_maps(unified_queries)
             except Exception as exc:
-                await websocket.send_json(
-                    {"type": "error", "message": f"Template error: {exc}"}
-                )
+                await websocket.send_json({"type": "error", "message": f"Template error: {exc}"})
                 return
 
-            await websocket.send_json(
-                {"type": "log", "message": f"Started report for {site_ids_input}"}
-            )
+            await websocket.send_json({"type": "log", "message": f"Started report for {site_ids_input}"})
             await websocket.send_json(
                 {
                     "type": "log",
-                    "message": (
-                        f"Loaded {len(unified_queries)} enabled queries from "
-                        f"MongoDB collection '{QUERY_COLLECTION_NAME}'."
-                    ),
+                    "message": f"Loaded {len(unified_queries)} enabled queries from MongoDB collection '{QUERY_COLLECTION_NAME}'.",
                 }
             )
 
             splunk_services = {}
             splunk_job_tasks = []
             elk_job_tasks = []
+            elk_clients = {}
 
-            es_auth = None
-            if ELK_USER and ELK_PASS:
-                es_auth = (ELK_USER, ELK_PASS)
-
-            async with AsyncElasticsearch(
-                ELK_SERVER_HOST,
-                basic_auth=es_auth,
-                verify_certs=False,
-            ) as es_client:
-                for site_id in site_ids:
-                    site_records = await asyncio.to_thread(
-                        lambda: list(coll.find({"id": site_id}))
+            async def get_elk_client(query_config):
+                connection = get_elk_connection_config(query_config)
+                client_key = connection["name"]
+                if client_key not in elk_clients:
+                    elk_clients[client_key] = AsyncElasticsearch(
+                        connection["host"],
+                        basic_auth=connection["auth"],
+                        verify_certs=False,
                     )
+                return elk_clients[client_key]
+
+            try:
+                for site_id in site_ids:
+                    site_records = await asyncio.to_thread(lambda: list(coll.find({"id": site_id})))
                     if not site_records:
-                        await websocket.send_json(
-                            {
-                                "type": "log",
-                                "message": f"Site ID '{site_id}' not found in MongoDB.",
-                            }
-                        )
+                        await websocket.send_json({"type": "log", "message": f"Site ID '{site_id}' not found in MongoDB."})
                         continue
 
-                    splunk_host = site_records[0].get(
-                        "splunk_server_host", "localhost"
-                    )
+                    splunk_host = site_records[0].get("splunk_server_host", "")
                     if splunk_host not in splunk_services:
-                        await websocket.send_json(
-                            {
-                                "type": "log",
-                                "message": f"Connecting to Splunk: {splunk_host}...",
-                            }
-                        )
+                        await websocket.send_json({"type": "log", "message": f"Connecting to Splunk: {splunk_host}..."})
                         try:
                             service = await asyncio.to_thread(
                                 client.connect,
@@ -492,56 +538,30 @@ async def ws_generate_report(websocket: WebSocket):
                             )
                             splunk_services[splunk_host] = service
                         except Exception as exc:
-                            await websocket.send_json(
-                                {
-                                    "type": "log",
-                                    "message": f"Splunk Connection Error: {exc}",
-                                }
-                            )
+                            await websocket.send_json({"type": "log", "message": f"Splunk Connection Error: {exc}"})
                             continue
 
                     service = splunk_services[splunk_host]
                     site_context_record = get_site_context_record(site_records)
 
-                    for query in get_site_queries(
-                        splunk_global.get("all_run", {}), site_id
-                    ):
+                    for query in get_site_queries(splunk_global.get("all_run", {}), site_id):
                         query_name = query.get("query_name")
                         query_template = query.get("query_template", "")
-
                         if "{index}" in query_template:
                             for record in site_records:
-                                final_query = replace_placeholders(
-                                    query_template, site_id, record
-                                )
+                                final_query = replace_placeholders(query_template, site_id, record)
                                 splunk_job_tasks.append(
                                     run_splunk_job(
-                                        service,
-                                        final_query,
-                                        splunk_earliest,
-                                        splunk_latest,
-                                        site_id,
-                                        f"Global-{record.get('device', 'Unknown')}",
-                                        query_name,
-                                        logs,
-                                        websocket,
+                                        service, final_query, splunk_earliest, splunk_latest, site_id,
+                                        f"Global-{record.get('device', 'Unknown')}", query_name, logs, websocket
                                     )
                                 )
                         else:
-                            final_query = replace_placeholders(
-                                query_template, site_id, site_records[0]
-                            )
+                            final_query = replace_placeholders(query_template, site_id, site_records[0])
                             splunk_job_tasks.append(
                                 run_splunk_job(
-                                    service,
-                                    final_query,
-                                    splunk_earliest,
-                                    splunk_latest,
-                                    site_id,
-                                    "Global",
-                                    query_name,
-                                    logs,
-                                    websocket,
+                                    service, final_query, splunk_earliest, splunk_latest, site_id,
+                                    "Global", query_name, logs, websocket
                                 )
                             )
 
@@ -549,75 +569,42 @@ async def ws_generate_report(websocket: WebSocket):
                         query_name = query.get("query_name")
                         receiver_id = get_record_receiver_id(site_context_record)
                         if not receiver_id:
-                            msg = (
-                                f"Skipping ELK query {query_name} for site {site_id}: "
-                                "receiver_id not found in MongoDB."
-                            )
+                            msg = f"Skipping ELK query {query_name} for site {site_id}: receiver_id not found in MongoDB."
                             logs.append(msg)
                             await websocket.send_json({"type": "log", "message": msg})
                             continue
 
-                        final_query_string = replace_placeholders(
-                            query.get("query_template", ""), site_id, site_context_record
-                        )
+                        final_query_string = replace_placeholders(query.get("query_template", ""), site_id, site_context_record)
+                        index_pattern = replace_placeholders(query.get("index_pattern", "casecbt-v01"), site_id, site_context_record)
+                        es_client = await get_elk_client(query)
                         elk_job_tasks.append(
                             run_elk_job(
-                                es_client,
-                                query,
-                                site_id,
-                                site_context_record.get("device", "Global"),
-                                query_name,
-                                final_query_string,
-                                elk_earliest,
-                                elk_latest,
-                                logs,
-                                websocket,
+                                es_client, query, site_id, site_context_record.get("device", "Global"),
+                                query_name, index_pattern, final_query_string, elk_earliest, elk_latest, logs, websocket
                             )
                         )
 
                     for record in site_records:
                         device = record.get("device")
-                        device_queries = get_site_queries(
-                            splunk_device.get(device, {}), site_id
-                        )
-                        for query in device_queries:
+                        for query in get_site_queries(splunk_device.get(device, {}), site_id):
                             query_name = query.get("query_name")
-                            query_template = query.get("query_template", "")
-                            final_query = replace_placeholders(
-                                query_template, site_id, record
-                            )
+                            final_query = replace_placeholders(query.get("query_template", ""), site_id, record)
                             splunk_job_tasks.append(
                                 run_splunk_job(
-                                    service,
-                                    final_query,
-                                    splunk_earliest,
-                                    splunk_latest,
-                                    site_id,
-                                    device,
-                                    query_name,
-                                    logs,
-                                    websocket,
+                                    service, final_query, splunk_earliest, splunk_latest,
+                                    site_id, device, query_name, logs, websocket
                                 )
                             )
 
-                        elk_queries = get_site_queries(elk_device.get(device, {}), site_id)
-                        for query in elk_queries:
+                        for query in get_site_queries(elk_device.get(device, {}), site_id):
                             query_name = query.get("query_name")
-                            final_query_string = replace_placeholders(
-                                query.get("query_template", ""), site_id, record
-                            )
+                            final_query_string = replace_placeholders(query.get("query_template", ""), site_id, record)
+                            index_pattern = replace_placeholders(query.get("index_pattern", "casecbt-v01"), site_id, record)
+                            es_client = await get_elk_client(query)
                             elk_job_tasks.append(
                                 run_elk_job(
-                                    es_client,
-                                    query,
-                                    site_id,
-                                    device,
-                                    query_name,
-                                    final_query_string,
-                                    elk_earliest,
-                                    elk_latest,
-                                    logs,
-                                    websocket,
+                                    es_client, query, site_id, device, query_name,
+                                    index_pattern, final_query_string, elk_earliest, elk_latest, logs, websocket
                                 )
                             )
 
@@ -626,29 +613,26 @@ async def ws_generate_report(websocket: WebSocket):
                     await websocket.send_json(
                         {
                             "type": "log",
-                            "message": (
-                                f"Executing {len(all_tasks)} queries "
-                                f"(Splunk={len(splunk_job_tasks)}, ELK={len(elk_job_tasks)})..."
-                            ),
+                            "message": f"Executing {len(all_tasks)} queries (Splunk={len(splunk_job_tasks)}, ELK={len(elk_job_tasks)})...",
                         }
                     )
                     results_list = await asyncio.gather(*all_tasks)
-                    all_report_data = [
-                        result for result in results_list if result is not None
-                    ]
-                    await websocket.send_json(
-                        {"type": "complete", "total": len(all_report_data)}
-                    )
+                    all_report_data = [result for result in results_list if result is not None]
+                    await websocket.send_json({"type": "complete", "total": len(all_report_data)})
                 else:
                     await websocket.send_json({"type": "complete", "total": 0})
+            finally:
+                for es_client in elk_clients.values():
+                    try:
+                        await es_client.close()
+                    except Exception:
+                        pass
 
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as exc:
         try:
-            await websocket.send_json(
-                {"type": "error", "message": f"Server Error: {str(exc)}"}
-            )
+            await websocket.send_json({"type": "error", "message": f"Server Error: {str(exc)}"})
         except Exception:
             pass
     finally:
